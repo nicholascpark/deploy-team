@@ -49,11 +49,13 @@ When agents already exist, run this sequence instead of the full deploy:
 7. **Create `experiments.md`** with parallel experiment template (Step 5f) if it doesn't exist
 8. **Create `program.md`** with living curriculum structure (Step 5g) if it doesn't exist. If it exists, offer to upgrade it with any missing sections.
 9. **Create data directories** (`data/inbox/`, `data/inbox/processed/`, `data/inbox/snapshots/`, `data/outbox/`) with `.gitkeep` files if they don't exist
-10. **Add sections to CLAUDE.md** — append Sustenance, Validation Engine, Adaptive Learning Engine, Autonomous Mode, and Irrevocable Action sections if not already present. Preserve all existing content.
-11. **Add autonomous mode awareness** to the Founder section in CLAUDE.md — mode detection, decision boundary, budget, briefing
-12. **Ask for email address** — "Email address for session briefings? (optional, press enter to skip)" Set as `BRIEFING_EMAIL` note in CLAUDE.md.
-13. **Review with human** — show what will be created/modified before writing
-14. **Commit** — `git add` only new/modified files, commit with message describing upgrade
+10. **Create NanoClaw skill templates** in `skills/` (5 skill definitions from Step 5j) if `skills/` doesn't exist. Create `skill-runner.sh` (Step 5k) and `healthcheck.sh` (Step 5l) if they don't exist. Make both executable.
+11. **Add sections to CLAUDE.md** — append Sustenance, Validation Engine, Adaptive Learning Engine, Autonomous Mode, Irrevocable Action, and NanoClaw Workforce sections if not already present. Preserve all existing content.
+12. **Add autonomous mode awareness** to the Founder section in CLAUDE.md — mode detection, decision boundary, budget, briefing
+13. **Ask for email address** — "Email address for session briefings? (optional, press enter to skip)" Set as `BRIEFING_EMAIL` note in CLAUDE.md.
+14. **Review with human** — show what will be created/modified before writing
+15. **Commit** — `git add` only new/modified files, commit with message describing upgrade
+16. **Run healthcheck** — execute `./healthcheck.sh .` and report results to the user
 
 **Key constraint: NEVER overwrite existing agent definitions.** Only ADD the DNA directive to them and add NEW infrastructure files. Existing agents are domain-tuned and may have been customized — replacing them would destroy work.
 
@@ -1277,6 +1279,316 @@ Create `decisions-pending.md` in the repo root:
 ```
 ```
 
+#### 5j: NanoClaw Skill Templates
+
+Create `skills/` directory with 5 SKILL.md templates. Each has YAML frontmatter with `model:` field for cost-appropriate execution:
+
+**`skills/financial-engine.md`:**
+```markdown
+---
+name: financial-engine
+version: 1.0
+model: haiku
+description: Processes data/inbox cost records into sustenance.json, recalibrates projections.
+triggers:
+  - schedule: "every 1h"
+  - event: "new-transaction-in-inbox"
+---
+
+# Financial Engine
+
+Read `data/inbox/` for new cost event files. For each: classify the transaction, update `sustenance.json` model statistics, refresh projections. Check if balance is below funding threshold (20% of last investment) — if so, write a funding request to `data/outbox/funding-request.json`. Log your own execution cost. Write results as JSON to stdout.
+```
+
+**`skills/growth-ops.md`:**
+```markdown
+---
+name: growth-ops
+version: 1.0
+model: sonnet
+description: Monitors experiment timelines, flags overdue measurements, suggests kills.
+triggers:
+  - schedule: "every 1h"
+  - event: "new-experiment-active"
+---
+
+# Growth Ops
+
+Read `data/inbox/` for `exp-*` measurement files. For each: read the data, identify which experiment it belongs to, append results to `experiments.md`, move file to `data/inbox/processed/`. Check active experiments against kill/double-down criteria. Flag overdue experiments. Write results as JSON to stdout.
+```
+
+**`skills/market-intel.md`:**
+```markdown
+---
+name: market-intel
+version: 1.0
+model: sonnet
+description: Watches competitors, market signals, regulatory changes.
+triggers:
+  - schedule: "every 6h"
+    mode: monitor
+  - schedule: "every 12h"
+    mode: survey
+---
+
+# Market Intel
+
+**Monitor mode (every 6h):** Check configured competitor websites, pricing pages, and industry sources for changes. Evaluate findings against `assumptions.md`. Write significant findings to `data/inbox/`.
+
+**Survey mode (every 12h):** Search broadly for new competitors, regulatory changes, market shifts, customer discussions, and opportunities. Write survey findings to `data/inbox/` with `survey-` prefix.
+```
+
+**`skills/source-monitors.md`:**
+```markdown
+---
+name: source-monitors
+version: 1.0
+model: haiku
+description: Tracks data sources for changes relevant to venture assumptions.
+triggers:
+  - schedule: "every 12h"
+---
+
+# Source Monitors
+
+Check all configured data sources for changes since last cycle. Compare current state to last known state. Evaluate changes against `assumptions.md`. Write change alerts to `data/inbox/`. Write results as JSON to stdout.
+```
+
+**`skills/umbilical-monitor.md`:**
+```markdown
+---
+name: umbilical-monitor
+version: 1.0
+model: haiku
+description: Monitors for parent signals and sibling venture learnings.
+triggers:
+  - schedule: "every 2h"
+  - event: "new-file-in-umbilical-inbox"
+---
+
+# Umbilical Monitor
+
+Check `umbilical/inbox/` for new signal files. Classify priority (high/medium/low). Route high-priority signals to `data/inbox/` with escalation flag + `channels/general.md`. Route medium/low to `data/inbox/` for Founder reconciliation. Write results as JSON to stdout.
+```
+
+Also create `skills/market-intel-watchlist.json`:
+```json
+{
+  "competitors": [],
+  "regulatory": [],
+  "data_sources": [],
+  "forums_and_communities": []
+}
+```
+
+#### 5k: skill-runner.sh — Lightweight NanoClaw
+
+Create `skill-runner.sh` in the repo root (make executable with `chmod +x`). This reads SKILL.md files from `skills/`, checks trigger schedules, and executes due skills via Claude Code with the model specified in each skill's YAML frontmatter. When real NanoClaw is deployed, it replaces this script.
+
+```bash
+#!/bin/bash
+# skill-runner.sh — lightweight NanoClaw implementation
+# Reads SKILL.md files, checks trigger schedules, executes due skills via Claude Code.
+# When real NanoClaw is deployed, it replaces this script.
+#
+# Usage: ./skill-runner.sh [venture-dir]
+#   Defaults to current directory.
+
+set -euo pipefail
+
+VENTURE_DIR="${1:-.}"
+SKILLS_DIR="$VENTURE_DIR/skills"
+INBOX_DIR="$VENTURE_DIR/data/inbox"
+STATE_DIR="$VENTURE_DIR/.skill-state"
+
+mkdir -p "$INBOX_DIR" "$STATE_DIR"
+
+log() { echo "[$(date '+%H:%M:%S')] skill-runner: $1"; }
+
+# Parse schedule string to seconds
+parse_schedule() {
+  local schedule="$1"
+  local num unit
+  num=$(echo "$schedule" | grep -oE '[0-9]+' | head -1)
+  unit=$(echo "$schedule" | grep -oE '[hm]' | head -1)
+  case "$unit" in
+    h) echo $((num * 3600)) ;;
+    m) echo $((num * 60)) ;;
+    *) echo 3600 ;;
+  esac
+}
+
+# Extract first schedule trigger from YAML
+get_schedule() {
+  local file="$1"
+  sed -n '/^---$/,/^---$/p' "$file" | grep 'schedule:' | head -1 | sed 's/.*"\(.*\)"/\1/; s/.*'"'"'\(.*\)'"'"'/\1/'
+}
+
+# Extract body (everything after the second ---)
+get_body() {
+  local file="$1"
+  awk 'BEGIN{n=0} /^---$/{n++; next} n>=2{print}' "$file"
+}
+
+# Determine model from explicit field or skill name
+get_model() {
+  local file="$1" skill_name="$2"
+  local explicit_model
+  explicit_model=$(sed -n '/^---$/,/^---$/p' "$file" | grep '^model:' | head -1 | sed 's/model: *//' | tr -d '"'"'" )
+  if [ -n "$explicit_model" ]; then
+    echo "$explicit_model"
+    return
+  fi
+  case "$skill_name" in
+    financial-engine)  echo "haiku" ;;
+    source-monitors)   echo "haiku" ;;
+    umbilical-monitor) echo "haiku" ;;
+    market-intel)      echo "sonnet" ;;
+    growth-ops)        echo "sonnet" ;;
+    *)                 echo "haiku" ;;
+  esac
+}
+
+if [ ! -d "$SKILLS_DIR" ]; then
+  log "No skills/ directory found in $VENTURE_DIR"
+  exit 0
+fi
+
+SKILL_COUNT=0
+RUN_COUNT=0
+
+for SKILL_FILE in "$SKILLS_DIR"/*.md; do
+  [ -f "$SKILL_FILE" ] || continue
+  SKILL_NAME=$(basename "$SKILL_FILE" .md)
+  if ! grep -q '^---$' "$SKILL_FILE"; then continue; fi
+
+  SKILL_COUNT=$((SKILL_COUNT + 1))
+  LAST_RUN_FILE="$STATE_DIR/${SKILL_NAME}.last-run"
+
+  SCHEDULE=$(get_schedule "$SKILL_FILE")
+  [ -z "$SCHEDULE" ] && SCHEDULE="every 1h"
+  INTERVAL=$(parse_schedule "$SCHEDULE")
+
+  NOW=$(date +%s)
+  LAST_RUN=0
+  [ -f "$LAST_RUN_FILE" ] && LAST_RUN=$(cat "$LAST_RUN_FILE")
+  ELAPSED=$((NOW - LAST_RUN))
+  if [ "$ELAPSED" -lt "$INTERVAL" ]; then continue; fi
+
+  # Check sustenance
+  SUSTENANCE="$VENTURE_DIR/sustenance.json"
+  if [ -f "$SUSTENANCE" ]; then
+    BALANCE=$(jq '[.investments[].amount] | add // 0' "$SUSTENANCE" 2>/dev/null || echo "0")
+    COSTS=$(jq '[.transactions[] | select(.direction=="out") | .amount] | add // 0' "$SUSTENANCE" 2>/dev/null || echo "0")
+    REVENUE=$(jq '[.transactions[] | select(.direction=="in") | .amount] | add // 0' "$SUSTENANCE" 2>/dev/null || echo "0")
+    NET=$(echo "scale=2; $BALANCE - $COSTS + $REVENUE" | bc)
+    if (( $(echo "$NET <= 0" | bc -l) )); then
+      log "$SKILL_NAME: venture dead (balance \$$NET), skipping all skills"
+      break
+    fi
+  fi
+
+  MODEL=$(get_model "$SKILL_FILE" "$SKILL_NAME")
+  BODY=$(get_body "$SKILL_FILE")
+  [ -z "$BODY" ] && { log "$SKILL_NAME: no body, skipping"; continue; }
+
+  log "$SKILL_NAME: triggering (${ELAPSED}s since last, interval ${INTERVAL}s, model: $MODEL)"
+  RESULT_FILE="$INBOX_DIR/${SKILL_NAME}-${NOW}.json"
+
+  cd "$VENTURE_DIR" && claude --print --model "$MODEL" --dangerously-skip-permissions "$BODY
+
+Write your output as a JSON object to stdout with at minimum: {\"skill\": \"${SKILL_NAME}\", \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\", \"status\": \"complete\"}" > "$RESULT_FILE" 2>&1 || true
+
+  echo "$NOW" > "$LAST_RUN_FILE"
+  RUN_COUNT=$((RUN_COUNT + 1))
+  log "$SKILL_NAME: complete → $RESULT_FILE"
+done
+
+log "Done. $SKILL_COUNT skills checked, $RUN_COUNT executed."
+```
+
+#### 5l: healthcheck.sh — Venture Healthcheck
+
+Create `healthcheck.sh` in the repo root (make executable with `chmod +x`). Verifies venture configuration is correct.
+
+```bash
+#!/bin/bash
+# healthcheck.sh — verify a venture is correctly configured
+# Usage: ./healthcheck.sh [venture-dir]
+
+VENTURE_DIR="${1:-.}"
+PASS=0
+FAIL=0
+
+check() {
+  local desc="$1" result="$2"
+  if [ "$result" = "true" ]; then
+    echo "  ✓ $desc"
+    PASS=$((PASS + 1))
+  else
+    echo "  ✗ $desc"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+echo "=== Healthcheck: $(basename $VENTURE_DIR) ==="
+
+# Core files
+check "DNA.md exists" "$([ -f $VENTURE_DIR/DNA.md ] && echo true || echo false)"
+check "sustenance.json exists" "$([ -f $VENTURE_DIR/sustenance.json ] && echo true || echo false)"
+check "sustenance.sh exists and executable" "$([ -x $VENTURE_DIR/sustenance.sh ] && echo true || echo false)"
+check "CLAUDE.md exists" "$([ -f $VENTURE_DIR/CLAUDE.md ] && echo true || echo false)"
+check "CLAUDE.md references DNA.md" "$(grep -q 'DNA.md' $VENTURE_DIR/CLAUDE.md 2>/dev/null && echo true || echo false)"
+check "decisions-pending.md exists" "$([ -f $VENTURE_DIR/decisions-pending.md ] && echo true || echo false)"
+check "experiments.md exists" "$([ -f $VENTURE_DIR/experiments.md ] && echo true || echo false)"
+check "program.md exists" "$([ -f $VENTURE_DIR/program.md ] && echo true || echo false)"
+
+# Hooks
+check "death-gate.sh exists and executable" "$([ -x $VENTURE_DIR/.claude/hooks/death-gate.sh ] && echo true || echo false)"
+check "sustenance-inject.sh exists" "$([ -x $VENTURE_DIR/.claude/hooks/sustenance-inject.sh ] && echo true || echo false)"
+check "cost-capture.sh exists" "$([ -x $VENTURE_DIR/.claude/hooks/cost-capture.sh ] && echo true || echo false)"
+check "dna-enforcement.sh exists" "$([ -x $VENTURE_DIR/.claude/hooks/dna-enforcement.sh ] && echo true || echo false)"
+check "irrevocable-gate.sh exists" "$([ -x $VENTURE_DIR/.claude/hooks/irrevocable-gate.sh ] && echo true || echo false)"
+check "telegram-notify.sh exists" "$([ -x $VENTURE_DIR/.claude/hooks/telegram-notify.sh ] && echo true || echo false)"
+check "session-briefing-email.sh exists" "$([ -x $VENTURE_DIR/.claude/hooks/session-briefing-email.sh ] && echo true || echo false)"
+
+# Settings
+check "settings.json has hooks" "$([ -f $VENTURE_DIR/.claude/settings.json ] && jq '.hooks' $VENTURE_DIR/.claude/settings.json >/dev/null 2>&1 && echo true || echo false)"
+
+# Skills
+check "skills/ directory exists" "$([ -d $VENTURE_DIR/skills ] && echo true || echo false)"
+SKILL_COUNT=$(ls $VENTURE_DIR/skills/*.md 2>/dev/null | wc -l | tr -d ' ')
+check "skills/ has definitions ($SKILL_COUNT found)" "$([ $SKILL_COUNT -ge 1 ] && echo true || echo false)"
+
+# Data directories
+check "data/inbox exists" "$([ -d $VENTURE_DIR/data/inbox ] && echo true || echo false)"
+check "data/inbox/processed exists" "$([ -d $VENTURE_DIR/data/inbox/processed ] && echo true || echo false)"
+check "data/outbox exists" "$([ -d $VENTURE_DIR/data/outbox ] && echo true || echo false)"
+
+# Agents
+AGENTS_WITH_DNA=$(grep -rl 'DNA.md' $VENTURE_DIR/.claude/agents/ 2>/dev/null | wc -l | tr -d ' ')
+TOTAL_AGENTS=$(find $VENTURE_DIR/.claude/agents -name "*.md" -type f 2>/dev/null | wc -l | tr -d ' ')
+check "All agents reference DNA.md ($AGENTS_WITH_DNA/$TOTAL_AGENTS)" "$([ $AGENTS_WITH_DNA -eq $TOTAL_AGENTS ] && echo true || echo false)"
+
+# Sustenance functional test
+check "sustenance.sh runs without error" "$(cd $VENTURE_DIR && SUSTENANCE_FILE=sustenance.json ./sustenance.sh summary >/dev/null 2>&1 && echo true || echo false)"
+
+# Skill runner test
+check "skill-runner.sh exists and executable" "$([ -x $VENTURE_DIR/skill-runner.sh ] && echo true || echo false)"
+
+# Healthcheck self-test
+check "healthcheck.sh exists and executable" "$([ -x $VENTURE_DIR/healthcheck.sh ] && echo true || echo false)"
+
+echo ""
+echo "=== Results: $PASS passed, $FAIL failed ==="
+if [ "$FAIL" -eq 0 ]; then
+  echo "Venture is healthy."
+else
+  echo "Venture has issues. Fix the failures above."
+fi
+exit $FAIL
+```
+
 ### Step 6: Generate CLAUDE.md
 
 If no CLAUDE.md exists, create one. If one exists, merge — preserve existing instructions and add the team section.
@@ -1374,6 +1686,14 @@ Post updates after completing work. Read all channels at the start of each sessi
 - **Priority override** — post `[PRIORITY]` to general.md to redirect focus.
 - Cross-department worker access — you can spawn any department's workers.
 
+## NanoClaw Workforce
+
+Persistent skills run between sessions in `skills/`: financial-engine, growth-ops, market-intel, source-monitors, umbilical-monitor. `skill-runner.sh` executes these using Claude Code with cost-appropriate models (haiku for monitoring, sonnet for analysis). Each skill's `model:` field in its YAML frontmatter determines which model runs it.
+
+The heartbeat daemon (`venture-heartbeat.sh`) runs skill-runner.sh first (cheap, per-skill), then triggers a Founder autonomous cycle only when needed (new results, pending decisions, or min cadence reached).
+
+Deploy new skills, kill underperforming ones, adjust parameters — review your workforce every 5th session.
+
 ## How to Work
 
 **Interactive mode:**
@@ -1456,24 +1776,44 @@ Ask: "Does this team and infrastructure look right? Approve to deploy, or reques
 Write all files. Then:
 
 ```bash
-chmod +x sustenance.sh .claude/hooks/death-gate.sh .claude/hooks/sustenance-inject.sh .claude/hooks/cost-capture.sh .claude/hooks/dna-enforcement.sh .claude/hooks/irrevocable-gate.sh .claude/hooks/telegram-notify.sh .claude/hooks/session-briefing-email.sh
-git add .claude/agents/ .claude/hooks/ .claude/settings.json channels/ CLAUDE.md DNA.md capabilities.md sustenance.json sustenance.sh experiments.md program.md decisions-pending.md data/
-git commit -m "deploy team: 4-manager org with lifecycle economics, autonomous mode, irrevocable gates, session briefings"
+chmod +x sustenance.sh skill-runner.sh healthcheck.sh .claude/hooks/death-gate.sh .claude/hooks/sustenance-inject.sh .claude/hooks/cost-capture.sh .claude/hooks/dna-enforcement.sh .claude/hooks/irrevocable-gate.sh .claude/hooks/telegram-notify.sh .claude/hooks/session-briefing-email.sh
+git add .claude/agents/ .claude/hooks/ .claude/settings.json channels/ skills/ CLAUDE.md DNA.md capabilities.md sustenance.json sustenance.sh skill-runner.sh healthcheck.sh experiments.md program.md decisions-pending.md data/
+git commit -m "deploy team: 4-manager org with lifecycle economics, skill-runner, healthcheck"
 ```
+
+### Step 10: Run Healthcheck
+
+After committing, run the healthcheck and report results:
+
+```bash
+./healthcheck.sh .
+```
+
+Report the results to the user. If there are failures, explain what needs to be fixed (e.g., missing files, configuration issues). The healthcheck verifies:
+- Core files (DNA.md, sustenance.json, CLAUDE.md, experiments.md, program.md, decisions-pending.md)
+- All 7 hooks exist and are executable
+- settings.json has hooks configured
+- Skills directory with definitions
+- Data directories exist
+- All agents reference DNA.md
+- sustenance.sh runs without error
+- skill-runner.sh and healthcheck.sh exist and are executable
+
+For upgrade mode: also run the healthcheck after committing and report results.
 
 ## NanoClaw Skills
 
-The deployed venture can use 5 NanoClaw skills (persistent background workers):
+The deployed venture includes 5 NanoClaw skill templates (persistent background workers) and `skill-runner.sh` to execute them:
 
-| Skill | Purpose |
-|-------|---------|
-| **financial-engine** | Processes data/inbox cost records into sustenance.json, recalibrates projections |
-| **growth-ops** | Monitors experiment timelines, flags overdue measurements, suggests kills |
-| **market-intel** | Watches competitors, market signals, regulatory changes — posts to channels/research.md |
-| **source-monitors** | Tracks data sources (analytics, signups, metrics endpoints) — feeds measurement-builder |
-| **umbilical-monitor** | Monitors venture health from the parent system perspective — flags distress signals |
+| Skill | Model | Purpose |
+|-------|-------|---------|
+| **financial-engine** | haiku | Processes data/inbox cost records into sustenance.json, recalibrates projections |
+| **growth-ops** | sonnet | Monitors experiment timelines, flags overdue measurements, suggests kills |
+| **market-intel** | sonnet | Watches competitors, market signals, regulatory changes — posts to channels/research.md |
+| **source-monitors** | haiku | Tracks data sources (analytics, signups, metrics endpoints) — feeds measurement-builder |
+| **umbilical-monitor** | haiku | Monitors for parent signals and sibling venture learnings |
 
-These are NOT deployed by this skill. They are deployed separately by the parent business-machine system. The Founder should be aware they exist and can request their activation.
+`skill-runner.sh` is a lightweight NanoClaw implementation that reads SKILL.md files, checks trigger schedules, and executes due skills via Claude Code with the model specified in each skill's `model:` field. When real NanoClaw is deployed, it replaces skill-runner.sh. Skills run on cost-appropriate models: haiku for monitoring/structured tasks (cheap), sonnet for analysis/judgment tasks.
 
 ## Important Rules
 
@@ -1494,3 +1834,7 @@ These are NOT deployed by this skill. They are deployed separately by the parent
 - **decisions-pending.md is always created** — even if empty at deploy time
 - **Telegram is optional** — if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are not set, notifications are silently skipped
 - **Email briefing is optional** — if BRIEFING_EMAIL is not set, email digest is silently skipped
+- **skill-runner.sh is always deployed** — lightweight NanoClaw that makes skills actually run between sessions
+- **healthcheck.sh is always deployed** — run after deploy/upgrade to verify configuration
+- **Skill model field is required** — every SKILL.md must have a `model:` field (haiku for cheap monitoring, sonnet for analysis)
+- **Healthcheck runs after every deploy/upgrade** — report results to the user

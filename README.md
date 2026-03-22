@@ -71,9 +71,10 @@ The skill will:
 3. Detect domain, tech stack, and measurement channels
 4. Generate domain-tuned managers, workers, channels, and CLAUDE.md
 5. Generate economic infrastructure (DNA.md, sustenance, 7 hooks, experiments, curriculum, decisions-pending)
-6. Configure autonomous/interactive mode, irrevocable gates, session briefings
-7. Ask you to review before writing
-8. Commit
+6. Generate NanoClaw skill templates, skill-runner.sh, and healthcheck.sh
+7. Configure autonomous/interactive mode, irrevocable gates, session briefings
+8. Ask you to review before writing
+9. Commit and run healthcheck
 
 ### Upgrade Mode
 
@@ -89,9 +90,10 @@ If the repo already has agents deployed (`.claude/agents/founder/` exists), the 
 - **Validation engine** — `experiments.md` with parallel experiment template
 - **Adaptive learning** — `program.md` with living curriculum structure
 - **Data infrastructure** — `data/inbox/`, snapshots, outbox directories
-- **CLAUDE.md sections** — Sustenance, Validation Engine, Adaptive Learning, Autonomous Mode, Irrevocable Actions sections appended
+- **NanoClaw skills** — 5 skill templates with model selection, `skill-runner.sh`, `healthcheck.sh`
+- **CLAUDE.md sections** — Sustenance, Validation Engine, Adaptive Learning, Autonomous Mode, Irrevocable Actions, NanoClaw Workforce sections appended
 
-Existing agents are never overwritten — only enhanced with the DNA directive.
+Existing agents are never overwritten — only enhanced with the DNA directive. Healthcheck runs after upgrade to verify configuration.
 
 ## What Gets Created
 
@@ -115,12 +117,15 @@ Existing agents are never overwritten — only enhanced with the DNA directive.
   session-briefing-email.sh — emails briefing digest at session start
 .claude/settings.json    — all hooks wired (5 hook events)
 channels/                — async inter-manager communication
+skills/                  — 5 NanoClaw skill templates (financial-engine, growth-ops, market-intel, source-monitors, umbilical-monitor)
 data/inbox/              — automated cost capture inbox
 DNA.md                   — first-person economic creed
 CLAUDE.md                — "You are the Founder" with mode detection (merged with existing)
 capabilities.md          — phase-gated actions (free capabilities active at Phase 0)
 sustenance.json          — economic ledger (investments, transactions, projections)
 sustenance.sh            — CLI for recording costs, revenue, investments
+skill-runner.sh          — lightweight NanoClaw that executes SKILL.md files via Claude Code
+healthcheck.sh           — verifies venture configuration is correct
 experiments.md           — parallel experiment swarm with autoresearch fields
 program.md               — living curriculum (stages, loops, pivot history, meta-learnings)
 decisions-pending.md     — queue for items requiring human approval
@@ -159,7 +164,32 @@ Based on management science research (Ringelmann effect, Amazon two-pizza teams,
 - **Phase 0 = Experiment** — validation starts immediately, phase gates control blast radius
 - **Autoresearch loops** — every experiment follows baseline -> run -> measure -> decide -> inject -> log
 - **Living curriculum** — program.md adapts based on evidence, not a static plan
-- **5 NanoClaw skills** — financial-engine, growth-ops, market-intel, source-monitors, umbilical-monitor (deployed by parent system)
+- **5 NanoClaw skills** — financial-engine, growth-ops, market-intel, source-monitors, umbilical-monitor with cost-appropriate model selection
+- **skill-runner.sh** — lightweight NanoClaw that executes skills between sessions via Claude Code (haiku for monitoring, sonnet for analysis)
+- **healthcheck.sh** — verifies venture configuration after deploy/upgrade
+
+## Skill Runner
+
+`skill-runner.sh` is a lightweight NanoClaw implementation. It reads SKILL.md files from `skills/`, checks their trigger schedules, and executes due skills via Claude Code. Each skill's YAML frontmatter includes a `model:` field that determines which Claude model runs it:
+
+| Model | Used For | Skills |
+|-------|----------|--------|
+| haiku | Structured data, monitoring, routing (cheap) | financial-engine, source-monitors, umbilical-monitor |
+| sonnet | Analysis, judgment, search (better reasoning) | market-intel, growth-ops |
+
+Run manually: `./skill-runner.sh` (from venture root). The heartbeat daemon runs it automatically on every trigger event.
+
+When real NanoClaw is deployed, it replaces this script. The SKILL.md format is forward-compatible.
+
+## Healthcheck
+
+`healthcheck.sh` verifies that a venture is correctly configured. Run it after deploy/upgrade or anytime to check system integrity:
+
+```bash
+./healthcheck.sh .
+```
+
+Checks: core files, all 7 hooks, settings.json, skill definitions, data directories, DNA directives in all agents, sustenance.sh functionality, skill-runner.sh and healthcheck.sh executability.
 
 ## License
 
