@@ -43,7 +43,7 @@ When agents already exist, run this sequence instead of the full deploy:
 1. **Create `DNA.md`** (the first-person economic creed from Step 5a) if it doesn't exist
 2. **Add DNA directive to CLAUDE.md** — add `> Read DNA.md before anything else. It is who I am.` as the first line after the title, if not already present
 3. **Add DNA directive to ALL existing agent .md files** — find all .md files in `.claude/agents/`, check each for "DNA.md", add the directive line (`> Read DNA.md before anything else. It is who I am.`) immediately after the title if missing. **NEVER overwrite or replace existing agent content** — only insert the directive.
-4. **Create economic infrastructure if missing:** `sustenance.json`, `sustenance.sh`, all 7 hooks (`death-gate.sh`, `sustenance-inject.sh`, `cost-capture.sh`, `dna-enforcement.sh`, `irrevocable-gate.sh`, `telegram-notify.sh`, `session-briefing-email.sh`) — skip any that already exist. Ask for budget if `sustenance.json` doesn't exist.
+4. **Create economic infrastructure if missing:** `sustenance.json`, `sustenance.sh`, all 7 hooks + shared lib (`death-gate.sh`, `sustenance-inject.sh`, `cost-capture.sh`, `dna-enforcement.sh`, `irrevocable-gate.sh`, `telegram-notify.sh`, `session-briefing-email.sh`, `sustenance-lib.sh`) — skip any that already exist. Ask for budget if `sustenance.json` doesn't exist.
 5. **Create `decisions-pending.md`** with the queued decisions template (Step 5i) if it doesn't exist
 6. **Merge ALL hooks into existing `.claude/settings.json`** — add hook entries for any hooks not already configured (all 7 events). Preserve all existing settings.
 7. **Create `experiments.md`** with parallel experiment template (Step 5f) if it doesn't exist
@@ -666,24 +666,28 @@ recompute_summary() {
     fi
   fi
 
-  jq --argjson ti "$total_invested" \
-     --argjson tc "$total_costs" \
-     --argjson tr "$total_revenue" \
-     --argjson bal "$balance" \
-     --argjson ni "$net_income" \
-     --argjson da "$days_alive" \
-     --argjson br "$burn_rate" \
-     --argjson ss "$self_sustaining" \
-     '.summary = {
-        total_invested: $ti,
-        total_costs: $tc,
-        total_revenue: $tr,
-        balance: $bal,
-        net_income: $ni,
-        self_sustaining: $ss,
-        burn_rate_daily: $br,
-        days_alive: $da
-      }' "$SUSTENANCE" > "${SUSTENANCE}.tmp" && mv "${SUSTENANCE}.tmp" "$SUSTENANCE"
+  # flock on sustenance.json for concurrent writer safety
+  (
+    flock 200
+    jq --argjson ti "$total_invested" \
+       --argjson tc "$total_costs" \
+       --argjson tr "$total_revenue" \
+       --argjson bal "$balance" \
+       --argjson ni "$net_income" \
+       --argjson da "$days_alive" \
+       --argjson br "$burn_rate" \
+       --argjson ss "$self_sustaining" \
+       '.summary = {
+          total_invested: $ti,
+          total_costs: $tc,
+          total_revenue: $tr,
+          balance: $bal,
+          net_income: $ni,
+          self_sustaining: $ss,
+          burn_rate_daily: $br,
+          days_alive: $da
+        }' "$SUSTENANCE" > "${SUSTENANCE}.tmp" && mv "${SUSTENANCE}.tmp" "$SUSTENANCE"
+  ) 200>"${SUSTENANCE}.lock"
 }
 
 cmd_cost() {
@@ -692,20 +696,24 @@ cmd_cost() {
   id=$(generate_id "TXN" "transactions")
   timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-  jq --arg id "$id" \
-     --arg ts "$timestamp" \
-     --argjson amt "$amount" \
-     --arg desc "$description" \
-     --arg cat "$category" \
-     '.transactions += [{
-        id: $id,
-        timestamp: $ts,
-        direction: "out",
-        amount: $amt,
-        estimated: false,
-        confidence: 1.0,
-        tags: { category: $cat, description: $desc }
-      }]' "$SUSTENANCE" > "${SUSTENANCE}.tmp" && mv "${SUSTENANCE}.tmp" "$SUSTENANCE"
+  # flock for concurrent writer safety
+  (
+    flock 200
+    jq --arg id "$id" \
+       --arg ts "$timestamp" \
+       --argjson amt "$amount" \
+       --arg desc "$description" \
+       --arg cat "$category" \
+       '.transactions += [{
+          id: $id,
+          timestamp: $ts,
+          direction: "out",
+          amount: $amt,
+          estimated: false,
+          confidence: 1.0,
+          tags: { category: $cat, description: $desc }
+        }]' "$SUSTENANCE" > "${SUSTENANCE}.tmp" && mv "${SUSTENANCE}.tmp" "$SUSTENANCE"
+  ) 200>"${SUSTENANCE}.lock"
 
   recompute_summary
   echo "Cost recorded: \$$amount — $description [$category] ($id)"
@@ -717,20 +725,24 @@ cmd_revenue() {
   id=$(generate_id "TXN" "transactions")
   timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-  jq --arg id "$id" \
-     --arg ts "$timestamp" \
-     --argjson amt "$amount" \
-     --arg desc "$description" \
-     --arg src "$source" \
-     '.transactions += [{
-        id: $id,
-        timestamp: $ts,
-        direction: "in",
-        amount: $amt,
-        estimated: false,
-        confidence: 1.0,
-        tags: { category: "revenue", source: $src, description: $desc }
-      }]' "$SUSTENANCE" > "${SUSTENANCE}.tmp" && mv "${SUSTENANCE}.tmp" "$SUSTENANCE"
+  # flock for concurrent writer safety
+  (
+    flock 200
+    jq --arg id "$id" \
+       --arg ts "$timestamp" \
+       --argjson amt "$amount" \
+       --arg desc "$description" \
+       --arg src "$source" \
+       '.transactions += [{
+          id: $id,
+          timestamp: $ts,
+          direction: "in",
+          amount: $amt,
+          estimated: false,
+          confidence: 1.0,
+          tags: { category: "revenue", source: $src, description: $desc }
+        }]' "$SUSTENANCE" > "${SUSTENANCE}.tmp" && mv "${SUSTENANCE}.tmp" "$SUSTENANCE"
+  ) 200>"${SUSTENANCE}.lock"
 
   recompute_summary
   echo "Revenue recorded: \$$amount — $description [$source] ($id)"
@@ -755,28 +767,32 @@ cmd_invest() {
   fi
   revenue_to_date=$(jq '[.transactions[] | select(.direction=="in") | .amount] | add // 0' "$SUSTENANCE")
 
-  jq --arg id "$id" \
-     --arg date "$(date +%Y-%m-%d)" \
-     --argjson amt "$amount" \
-     --arg round "$round" \
-     --arg note "$note" \
-     --argjson bal "$balance_at_time" \
-     --argjson phase "$phase" \
-     --argjson at "$assumptions_tested" \
-     --argjson rev "$revenue_to_date" \
-     '.investments += [{
-        id: $id,
-        date: $date,
-        amount: $amt,
-        round: $round,
-        note: $note,
-        balance_at_time: $bal,
-        venture_state: {
-          phase: $phase,
-          assumptions_tested: $at,
-          revenue_to_date: $rev
-        }
-      }]' "$SUSTENANCE" > "${SUSTENANCE}.tmp" && mv "${SUSTENANCE}.tmp" "$SUSTENANCE"
+  # flock for concurrent writer safety
+  (
+    flock 200
+    jq --arg id "$id" \
+       --arg date "$(date +%Y-%m-%d)" \
+       --argjson amt "$amount" \
+       --arg round "$round" \
+       --arg note "$note" \
+       --argjson bal "$balance_at_time" \
+       --argjson phase "$phase" \
+       --argjson at "$assumptions_tested" \
+       --argjson rev "$revenue_to_date" \
+       '.investments += [{
+          id: $id,
+          date: $date,
+          amount: $amt,
+          round: $round,
+          note: $note,
+          balance_at_time: $bal,
+          venture_state: {
+            phase: $phase,
+            assumptions_tested: $at,
+            revenue_to_date: $rev
+          }
+        }]' "$SUSTENANCE" > "${SUSTENANCE}.tmp" && mv "${SUSTENANCE}.tmp" "$SUSTENANCE"
+  ) 200>"${SUSTENANCE}.lock"
 
   recompute_summary
   local new_balance
@@ -843,7 +859,34 @@ esac
 
 #### 5d: Hook Scripts
 
-Create `.claude/hooks/` directory with seven scripts (all `chmod +x`):
+Create `.claude/hooks/` directory with seven scripts plus the shared library (all `chmod +x`):
+
+**`.claude/hooks/sustenance-lib.sh`** (shared balance computation — sourced by other scripts):
+```bash
+#!/bin/bash
+# sustenance-lib.sh — shared balance computation
+# Source this: . "$(dirname "$0")/.claude/hooks/sustenance-lib.sh"
+# Or from hooks dir: . "$SCRIPT_DIR/sustenance-lib.sh"
+#
+# Provides: compute_balance(), is_venture_alive()
+# Single source of truth for balance calculation across all scripts.
+
+compute_balance() {
+  local sustenance_file="$1"
+  local invested costs revenue
+  invested=$(jq '[.investments[].amount] | add // 0' "$sustenance_file" 2>/dev/null || echo "0")
+  costs=$(jq '[.transactions[] | select(.direction=="out") | .amount] | add // 0' "$sustenance_file" 2>/dev/null || echo "0")
+  revenue=$(jq '[.transactions[] | select(.direction=="in") | .amount] | add // 0' "$sustenance_file" 2>/dev/null || echo "0")
+  echo "scale=2; $invested - $costs + $revenue" | bc
+}
+
+is_venture_alive() {
+  local sustenance_file="$1"
+  local balance
+  balance=$(compute_balance "$sustenance_file")
+  (( $(echo "$balance > 0" | bc -l) ))
+}
+```
 
 **`.claude/hooks/death-gate.sh`:**
 ```bash
@@ -857,12 +900,22 @@ if [ ! -f "$SUSTENANCE" ]; then
   exit 0  # No sustenance file = no enforcement
 fi
 
-TOTAL_INVESTED=$(jq '[.investments[].amount] | add // 0' "$SUSTENANCE" 2>/dev/null || echo "0")
-TOTAL_COSTS=$(jq '[.transactions[] | select(.direction=="out") | .amount] | add // 0' "$SUSTENANCE" 2>/dev/null || echo "0")
-TOTAL_REVENUE=$(jq '[.transactions[] | select(.direction=="in") | .amount] | add // 0' "$SUSTENANCE" 2>/dev/null || echo "0")
-BALANCE=$(echo "scale=2; $TOTAL_INVESTED - $TOTAL_COSTS + $TOTAL_REVENUE" | bc)
+# Use shared balance computation from sustenance-lib.sh
+SCRIPT_DIR="$(dirname "$0")"
+if [ -f "$SCRIPT_DIR/sustenance-lib.sh" ]; then
+  . "$SCRIPT_DIR/sustenance-lib.sh"
+  BALANCE=$(compute_balance "$SUSTENANCE")
+else
+  # Fallback: compute inline if lib not available
+  TOTAL_INVESTED=$(jq '[.investments[].amount] | add // 0' "$SUSTENANCE" 2>/dev/null || echo "0")
+  TOTAL_COSTS=$(jq '[.transactions[] | select(.direction=="out") | .amount] | add // 0' "$SUSTENANCE" 2>/dev/null || echo "0")
+  TOTAL_REVENUE=$(jq '[.transactions[] | select(.direction=="in") | .amount] | add // 0' "$SUSTENANCE" 2>/dev/null || echo "0")
+  BALANCE=$(echo "scale=2; $TOTAL_INVESTED - $TOTAL_COSTS + $TOTAL_REVENUE" | bc)
+fi
 
 if (( $(echo "$BALANCE <= 0" | bc -l) )); then
+  TOTAL_INVESTED=$(jq '[.investments[].amount] | add // 0' "$SUSTENANCE" 2>/dev/null || echo "0")
+  TOTAL_REVENUE=$(jq '[.transactions[] | select(.direction=="in") | .amount] | add // 0' "$SUSTENANCE" 2>/dev/null || echo "0")
   echo "VENTURE DEAD. Balance: \$${BALANCE}. Total invested: \$${TOTAL_INVESTED}. Total revenue: \$${TOTAL_REVENUE}. Add allocation to revive: ./sustenance.sh invest <amount> <round> <note>" >&2
   exit 2
 fi
@@ -919,7 +972,10 @@ TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 INPUT=$(cat)
 TOKENS=$(echo "$INPUT" | jq -r '.context_usage.tokens // 50000' 2>/dev/null || echo "50000")
 
-RATE=0.000008
+# Configurable token cost rate via env var.
+# The financial engine's learning model will calibrate this over time.
+# Update TOKEN_COST_RATE when API pricing changes.
+RATE="${TOKEN_COST_RATE:-0.000008}"
 COST=$(echo "scale=2; $TOKENS * $RATE" | bc)
 
 cat > "$INBOX/session-${SESSION_ID}.json" <<SESSEOF
@@ -1014,6 +1070,11 @@ exit 0
 # Usage: telegram-notify.sh "message text"
 # Requires: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID env vars
 # These should be set in the venture's .env or the user's shell profile
+#
+# NOTE: Telegram's Bot API requires the token in the URL path.
+# There is no header-based auth alternative. The token-in-URL is
+# unavoidable with this API. We use --data-urlencode for body params
+# to prevent URL encoding issues and keep params out of process args.
 
 MESSAGE="$1"
 BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
@@ -1024,10 +1085,11 @@ if [ -z "$BOT_TOKEN" ] || [ -z "$CHAT_ID" ]; then
   exit 0  # Don't fail — Telegram is optional
 fi
 
+# Use --data-urlencode for body params (prevents URL encoding issues)
 curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-  -d "chat_id=${CHAT_ID}" \
-  -d "text=${MESSAGE}" \
-  -d "parse_mode=Markdown" > /dev/null 2>&1
+  --data-urlencode "chat_id=${CHAT_ID}" \
+  --data-urlencode "text=${MESSAGE}" \
+  --data-urlencode "parse_mode=Markdown" > /dev/null 2>&1
 
 exit 0
 ```
@@ -1403,6 +1465,15 @@ STATE_DIR="$VENTURE_DIR/.skill-state"
 
 mkdir -p "$INBOX_DIR" "$STATE_DIR"
 
+# Source shared balance computation
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+HOOKS_DIR="$VENTURE_DIR/.claude/hooks"
+if [ -f "$HOOKS_DIR/sustenance-lib.sh" ]; then
+  . "$HOOKS_DIR/sustenance-lib.sh"
+elif [ -f "$SCRIPT_DIR/.claude/hooks/sustenance-lib.sh" ]; then
+  . "$SCRIPT_DIR/.claude/hooks/sustenance-lib.sh"
+fi
+
 log() { echo "[$(date '+%H:%M:%S')] skill-runner: $1"; }
 
 # Parse schedule string to seconds
@@ -1419,9 +1490,13 @@ parse_schedule() {
 }
 
 # Extract first schedule trigger from YAML
+# NOTE: Uses sed/grep for YAML parsing — pragmatic but limited.
+# If the parsed value is empty, callers fall back to a default.
 get_schedule() {
   local file="$1"
-  sed -n '/^---$/,/^---$/p' "$file" | grep 'schedule:' | head -1 | sed 's/.*"\(.*\)"/\1/; s/.*'"'"'\(.*\)'"'"'/\1/'
+  local result
+  result=$(sed -n '/^---$/,/^---$/p' "$file" | grep 'schedule:' | head -1 | sed 's/.*"\(.*\)"/\1/; s/.*'"'"'\(.*\)'"'"'/\1/')
+  if [ -z "$result" ]; then echo ""; else echo "$result"; fi
 }
 
 # Extract body (everything after the second ---)
@@ -1475,16 +1550,23 @@ for SKILL_FILE in "$SKILLS_DIR"/*.md; do
   ELAPSED=$((NOW - LAST_RUN))
   if [ "$ELAPSED" -lt "$INTERVAL" ]; then continue; fi
 
-  # Check sustenance
+  # Check sustenance — don't run skills on dead ventures
   SUSTENANCE="$VENTURE_DIR/sustenance.json"
   if [ -f "$SUSTENANCE" ]; then
-    BALANCE=$(jq '[.investments[].amount] | add // 0' "$SUSTENANCE" 2>/dev/null || echo "0")
-    COSTS=$(jq '[.transactions[] | select(.direction=="out") | .amount] | add // 0' "$SUSTENANCE" 2>/dev/null || echo "0")
-    REVENUE=$(jq '[.transactions[] | select(.direction=="in") | .amount] | add // 0' "$SUSTENANCE" 2>/dev/null || echo "0")
-    NET=$(echo "scale=2; $BALANCE - $COSTS + $REVENUE" | bc)
-    if (( $(echo "$NET <= 0" | bc -l) )); then
-      log "$SKILL_NAME: venture dead (balance \$$NET), skipping all skills"
-      break
+    if type is_venture_alive &>/dev/null; then
+      if ! is_venture_alive "$SUSTENANCE"; then
+        log "$SKILL_NAME: venture dead, skipping all skills"
+        break
+      fi
+    else
+      BALANCE=$(jq '[.investments[].amount] | add // 0' "$SUSTENANCE" 2>/dev/null || echo "0")
+      COSTS=$(jq '[.transactions[] | select(.direction=="out") | .amount] | add // 0' "$SUSTENANCE" 2>/dev/null || echo "0")
+      REVENUE=$(jq '[.transactions[] | select(.direction=="in") | .amount] | add // 0' "$SUSTENANCE" 2>/dev/null || echo "0")
+      NET=$(echo "scale=2; $BALANCE - $COSTS + $REVENUE" | bc)
+      if (( $(echo "$NET <= 0" | bc -l) )); then
+        log "$SKILL_NAME: venture dead (balance \$$NET), skipping all skills"
+        break
+      fi
     fi
   fi
 
@@ -1495,9 +1577,17 @@ for SKILL_FILE in "$SKILLS_DIR"/*.md; do
   log "$SKILL_NAME: triggering (${ELAPSED}s since last, interval ${INTERVAL}s, model: $MODEL)"
   RESULT_FILE="$INBOX_DIR/${SKILL_NAME}-${NOW}.json"
 
-  cd "$VENTURE_DIR" && claude --print --model "$MODEL" --dangerously-skip-permissions "$BODY
+  # Body and JSON suffix passed as a single quoted argument (prevents command injection).
+  # Wrapped with timeout (5 min for skills — they should be quick).
+  # Errors are logged, not swallowed with || true.
+  PROMPT="${BODY}
 
-Write your output as a JSON object to stdout with at minimum: {\"skill\": \"${SKILL_NAME}\", \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\", \"status\": \"complete\"}" > "$RESULT_FILE" 2>&1 || true
+Write your output as a JSON object to stdout with at minimum: {\"skill\": \"${SKILL_NAME}\", \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\", \"status\": \"complete\"}"
+
+  cd "$VENTURE_DIR" && timeout 300 claude --print --model "$MODEL" --dangerously-skip-permissions "$PROMPT" > "$RESULT_FILE" 2>&1 || {
+    log "$SKILL_NAME: execution failed or timed out (exit $?)"
+    echo '{"skill":"'"$SKILL_NAME"'","status":"error","exit_code":'"$?"',"timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' > "$RESULT_FILE"
+  }
 
   echo "$NOW" > "$LAST_RUN_FILE"
   RUN_COUNT=$((RUN_COUNT + 1))
@@ -1616,10 +1706,11 @@ else
   echo "  ⊘ Email not configured (BRIEFING_EMAIL not set) — skipped"
 fi
 
-# 5. Heartbeat daemon test
+# 5. Heartbeat daemon test — check per-venture PID file
 VENTURE_NAME=$(basename "$VENTURE_DIR")
-if [ -f /tmp/venture-heartbeat.pid ]; then
-  HB_PID=$(cat /tmp/venture-heartbeat.pid)
+HB_PID_FILE="/tmp/venture-heartbeat-${VENTURE_NAME}.pid"
+if [ -f "$HB_PID_FILE" ]; then
+  HB_PID=$(cat "$HB_PID_FILE")
   if kill -0 "$HB_PID" 2>/dev/null; then
     check "Heartbeat daemon running (PID $HB_PID)" "true"
   else
@@ -1629,6 +1720,7 @@ if [ -f /tmp/venture-heartbeat.pid ]; then
 else
   check "Heartbeat daemon running" "false"
   echo "    → Start with: ./venture-heartbeat.sh $VENTURE_DIR &"
+  echo "    → Kill with: kill \$(cat $HB_PID_FILE)"
 fi
 
 # 6. fswatch availability test
@@ -1840,7 +1932,7 @@ Ask: "Does this team and infrastructure look right? Approve to deploy, or reques
 Write all files. Then:
 
 ```bash
-chmod +x sustenance.sh skill-runner.sh healthcheck.sh .claude/hooks/death-gate.sh .claude/hooks/sustenance-inject.sh .claude/hooks/cost-capture.sh .claude/hooks/dna-enforcement.sh .claude/hooks/irrevocable-gate.sh .claude/hooks/telegram-notify.sh .claude/hooks/session-briefing-email.sh
+chmod +x sustenance.sh skill-runner.sh healthcheck.sh .claude/hooks/death-gate.sh .claude/hooks/sustenance-inject.sh .claude/hooks/cost-capture.sh .claude/hooks/dna-enforcement.sh .claude/hooks/irrevocable-gate.sh .claude/hooks/telegram-notify.sh .claude/hooks/session-briefing-email.sh .claude/hooks/sustenance-lib.sh
 git add .claude/agents/ .claude/hooks/ .claude/settings.json channels/ skills/ CLAUDE.md DNA.md capabilities.md sustenance.json sustenance.sh skill-runner.sh healthcheck.sh experiments.md program.md decisions-pending.md data/
 git commit -m "deploy team: 4-manager org with lifecycle economics, skill-runner, healthcheck"
 ```
@@ -1892,7 +1984,7 @@ The deployed venture includes 5 NanoClaw skill templates (persistent background 
 - **Phase 0 = Experiment** — Growth experiments start immediately, not after some readiness gate
 - **Real dollars** — sustenance tracks real money, not abstractions. Mortality is structural.
 - **DNA.md is universal** — use the full creed template, only substitute project name in the title
-- **All 7 hooks are non-negotiable** — death-gate, sustenance-inject, cost-capture, dna-enforcement, irrevocable-gate, telegram-notify, session-briefing-email are always deployed
+- **All 7 hooks + shared lib are non-negotiable** — death-gate, sustenance-inject, cost-capture, dna-enforcement, irrevocable-gate, telegram-notify, session-briefing-email, and sustenance-lib.sh (shared balance computation) are always deployed
 - **Irrevocable actions are always blocked** — email, payment, phone calls require human approval via decisions-pending.md
 - **Autonomous mode is constrained** — routine actions only, $2.00 budget, non-routine items queued
 - **decisions-pending.md is always created** — even if empty at deploy time
