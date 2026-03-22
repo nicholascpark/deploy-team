@@ -59,6 +59,20 @@ The skill will:
 6. Ask you to review before writing
 7. Commit
 
+### Upgrade Mode
+
+If the repo already has agents deployed (`.claude/agents/founder/` exists), the skill automatically switches to **upgrade mode**. Instead of replacing your existing team, it retrofits the repo with:
+
+- **DNA directive** — added to CLAUDE.md and all existing agent `.md` files (never overwrites agent content)
+- **DNA enforcement hook** — catches agent definitions written without the DNA directive (PreToolUse on Write/Edit)
+- **Lifecycle economics** — `DNA.md`, `sustenance.json`, `sustenance.sh`, and hooks (death-gate, sustenance-inject, cost-capture)
+- **Validation engine** — `experiments.md` with parallel experiment template
+- **Adaptive learning** — `program.md` with living curriculum structure
+- **Data infrastructure** — `data/inbox/`, snapshots, outbox directories
+- **CLAUDE.md sections** — Sustenance, Validation Engine, and Adaptive Learning Engine sections appended
+
+Existing agents are never overwritten — only enhanced with the DNA directive.
+
 ## What Gets Created
 
 ```
@@ -75,6 +89,7 @@ The skill will:
   death-gate.sh     — blocks sessions when balance <= $0
   sustenance-inject.sh — economic briefing at session start
   cost-capture.sh   — estimates and records session costs
+  dna-enforcement.sh — catches agent definitions written without DNA directive
 .claude/settings.json — hooks wired up
 channels/           — async inter-manager communication
 data/inbox/         — automated cost capture inbox

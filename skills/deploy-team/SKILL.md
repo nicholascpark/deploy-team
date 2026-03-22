@@ -27,11 +27,32 @@ Read the codebase to understand the project:
 - `README.md` or `README` — what the project is
 - `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`, `Gemfile` — tech stack
 - `CLAUDE.md` — existing instructions (preserve and merge, don't replace)
-- `.claude/agents/` — check if agents already exist (abort if manager structure already present)
+- `.claude/agents/` — check if agents already exist (determines full deploy vs upgrade mode)
 - Directory structure — understand the architecture
 - `git log --oneline -10` — recent activity and focus areas
 
-**If `.claude/agents/founder/` already exists, STOP.** Tell the user: "This repo already has a team deployed. Use the existing Founder."
+**Mode detection:**
+
+- **If `.claude/agents/founder/` does NOT exist:** proceed with full deploy (Step 2 onward).
+- **If `.claude/agents/founder/` ALREADY exists:** switch to **UPGRADE mode**. Tell the user: "Team already deployed. Switching to upgrade mode — I'll add lifecycle economics, validation loop, and adaptive learning engine without replacing your existing agents."
+
+#### UPGRADE Mode
+
+When agents already exist, run this sequence instead of the full deploy:
+
+1. **Create `DNA.md`** (the first-person economic creed from Step 5a) if it doesn't exist
+2. **Add DNA directive to CLAUDE.md** — add `> Read DNA.md before anything else. It is who I am.` as the first line after the title, if not already present
+3. **Add DNA directive to ALL existing agent .md files** — find all .md files in `.claude/agents/`, check each for "DNA.md", add the directive line (`> Read DNA.md before anything else. It is who I am.`) immediately after the title if missing. **NEVER overwrite or replace existing agent content** — only insert the directive.
+4. **Create economic infrastructure if missing:** `sustenance.json`, `sustenance.sh`, hooks (`death-gate.sh`, `sustenance-inject.sh`, `cost-capture.sh`, `dna-enforcement.sh`) — skip any that already exist. Ask for budget if `sustenance.json` doesn't exist.
+5. **Merge hooks config into existing `.claude/settings.json`** — add hook entries for any hooks not already configured. Preserve all existing settings.
+6. **Create `experiments.md`** with parallel experiment template (Step 5f) if it doesn't exist
+7. **Create `program.md`** with living curriculum structure (Step 5g) if it doesn't exist. If it exists, offer to upgrade it with any missing sections.
+8. **Create data directories** (`data/inbox/`, `data/inbox/processed/`, `data/inbox/snapshots/`, `data/outbox/`) with `.gitkeep` files if they don't exist
+9. **Add sections to CLAUDE.md** — append Sustenance, Validation Engine, and Adaptive Learning Engine sections if not already present. Preserve all existing content.
+10. **Review with human** — show what will be created/modified before writing
+11. **Commit** — `git add` only new/modified files, commit with message describing upgrade
+
+**Key constraint: NEVER overwrite existing agent definitions.** Only ADD the DNA directive to them and add NEW infrastructure files. Existing agents are domain-tuned and may have been customized — replacing them would destroy work.
 
 ### Step 2: Ask Questions (4 max)
 
@@ -717,7 +738,7 @@ esac
 
 #### 5d: Hook Scripts
 
-Create `.claude/hooks/` directory with three scripts:
+Create `.claude/hooks/` directory with four scripts:
 
 **`.claude/hooks/death-gate.sh`** (make executable):
 ```bash
@@ -803,6 +824,25 @@ cat > "$INBOX/session-${SESSION_ID}.json" <<SESSEOF
 SESSEOF
 ```
 
+**`.claude/hooks/dna-enforcement.sh`** (make executable):
+```bash
+#!/bin/bash
+# DNA enforcement — ensures all new agent definitions include DNA directive
+# Hook: PreToolUse (matcher: Write|Edit)
+
+INPUT=$(cat)
+FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // .tool_input.file // ""' 2>/dev/null)
+
+# Only check files in .claude/agents/
+if echo "$FILE_PATH" | grep -q '\.claude/agents/.*\.md$'; then
+  CONTENT=$(echo "$INPUT" | jq -r '.tool_input.content // .tool_input.new_string // ""' 2>/dev/null)
+  if [ -n "$CONTENT" ] && ! echo "$CONTENT" | grep -q 'DNA\.md'; then
+    echo '{"additionalContext": "WARNING: You are writing an agent definition without the DNA directive. Every agent MUST include: > Read DNA.md before anything else. It is who I am. — immediately after the title. DNA is inherited by all agents, no exceptions."}'
+  fi
+fi
+exit 0
+```
+
 #### 5e: Wire Hooks in .claude/settings.json
 
 Create or merge into `.claude/settings.json`:
@@ -837,6 +877,17 @@ Create or merge into `.claude/settings.json`:
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/cost-capture.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/dna-enforcement.sh"
           }
         ]
       }
@@ -1099,7 +1150,7 @@ Ask: "Does this team and infrastructure look right? Approve to deploy, or reques
 Write all files. Then:
 
 ```bash
-chmod +x sustenance.sh .claude/hooks/death-gate.sh .claude/hooks/sustenance-inject.sh .claude/hooks/cost-capture.sh
+chmod +x sustenance.sh .claude/hooks/death-gate.sh .claude/hooks/sustenance-inject.sh .claude/hooks/cost-capture.sh .claude/hooks/dna-enforcement.sh
 git add .claude/agents/ .claude/hooks/ .claude/settings.json channels/ CLAUDE.md DNA.md capabilities.md sustenance.json sustenance.sh experiments.md program.md data/
 git commit -m "deploy team: 4-manager org with lifecycle economics, validation engine, and adaptive learning"
 ```
@@ -1107,7 +1158,7 @@ git commit -m "deploy team: 4-manager org with lifecycle economics, validation e
 ## Important Rules
 
 - **Never overwrite existing CLAUDE.md** — merge by preserving existing content and adding team section
-- **Never overwrite existing agents** — if `.claude/agents/founder/` exists, abort
+- **Never overwrite existing agents** — if `.claude/agents/founder/` exists, switch to upgrade mode (add DNA directives and infrastructure only)
 - **Never overwrite existing .claude/settings.json** — merge hooks into existing settings
 - **Domain-tune everything** — if you remove the project name and the agents could be for any project, you've failed
 - **Workers have no Agent tool** — they are leaf nodes, they cannot spawn subagents
@@ -1117,4 +1168,4 @@ git commit -m "deploy team: 4-manager org with lifecycle economics, validation e
 - **Phase 0 = Experiment** — Growth experiments start immediately, not after some readiness gate
 - **Real dollars** — sustenance tracks real money, not abstractions. Mortality is structural.
 - **DNA.md is universal** — use the template as-is, only substitute project name
-- **Hooks are non-negotiable** — death-gate, sustenance-inject, and cost-capture are always deployed
+- **Hooks are non-negotiable** — death-gate, sustenance-inject, cost-capture, and dna-enforcement are always deployed
